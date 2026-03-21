@@ -13,6 +13,7 @@
     "product_name",
     "brands",
     "quantity",
+    "nutrition_data_per",
     "serving_size",
     "serving_quantity",
     "nutriments",
@@ -633,6 +634,175 @@
     return null;
   }
 
+  function normalizeOpenFoodFactsPerUnit(value) {
+    return String(value || "").trim().toLowerCase();
+  }
+
+  function isOpenFoodFactsPerServing(product) {
+    return normalizeOpenFoodFactsPerUnit(product?.nutrition_data_per) === "serving";
+  }
+
+  function isOpenFoodFactsPerHundred(product) {
+    const perUnit = normalizeOpenFoodFactsPerUnit(product?.nutrition_data_per);
+    return perUnit === "100g" || perUnit === "100ml" || perUnit === "100 ml";
+  }
+
+  function extractOpenFoodFactsServingMetricAmount(product) {
+    const text = normalizeText(product?.serving_size);
+    if (!text) {
+      return null;
+    }
+
+    const unitMultipliers = {
+      mg: 0.001,
+      g: 1,
+      kg: 1000,
+      ml: 1,
+      cl: 10,
+      dl: 100,
+      l: 1000,
+      oz: 28.349523125,
+      "fl oz": 29.5735295625,
+      lb: 453.59237,
+      lbs: 453.59237
+    };
+    const pattern = /(\d+(?:\.\d+)?)\s*(fl\s*oz|lbs?|kg|mg|g|ml|cl|dl|l|oz)\b/gi;
+    let match;
+    let metricAmount = null;
+
+    while ((match = pattern.exec(text)) !== null) {
+      const quantity = Number(match[1]);
+      const unit = match[2].toLowerCase().replace(/\s+/g, " ");
+      const multiplier = unitMultipliers[unit];
+      if (Number.isFinite(quantity) && Number.isFinite(multiplier)) {
+        metricAmount = quantity * multiplier;
+      }
+    }
+
+    return Number.isFinite(metricAmount) ? metricAmount : null;
+  }
+
+  function convertOpenFoodFactsPerHundredToServing(value, servingMetricAmount) {
+    if (!Number.isFinite(value) || !Number.isFinite(servingMetricAmount)) {
+      return null;
+    }
+
+    return (value * servingMetricAmount) / 100;
+  }
+
+  function convertKilojoulesToKilocalories(value) {
+    if (!Number.isFinite(value)) {
+      return null;
+    }
+
+    return value / 4.184;
+  }
+
+  function valuesConflict(left, right, tolerance = 0.2) {
+    if (!Number.isFinite(left) || !Number.isFinite(right) || left <= 0 || right <= 0) {
+      return false;
+    }
+
+    return Math.abs(left - right) / Math.max(left, right) > tolerance;
+  }
+
+  function roundDerivedCalories(value) {
+    if (!Number.isFinite(value)) {
+      return null;
+    }
+
+    if (value <= 50) {
+      return Math.round(value / 5) * 5;
+    }
+
+    return Math.round(value / 10) * 10;
+  }
+
+  function getOpenFoodFactsFieldValue(nutriments, keys) {
+    return getFirstFiniteNumber(keys.map((key) => nutriments[key]));
+  }
+
+  function resolveOpenFoodFactsServingNutrient(product, config) {
+    const nutriments = product?.nutriments || {};
+    const directServingValue = getOpenFoodFactsFieldValue(nutriments, config.servingKeys);
+    if (Number.isFinite(directServingValue)) {
+      return directServingValue;
+    }
+
+    const neutralValue = getOpenFoodFactsFieldValue(nutriments, config.neutralKeys || []);
+    if (isOpenFoodFactsPerServing(product) && Number.isFinite(neutralValue)) {
+      return neutralValue;
+    }
+
+    const perHundredValue = getOpenFoodFactsFieldValue(nutriments, config.hundredKeys);
+    const fallbackHundredValue = Number.isFinite(perHundredValue)
+      ? perHundredValue
+      : (isOpenFoodFactsPerHundred(product) ? neutralValue : null);
+    const servingMetricAmount = extractOpenFoodFactsServingMetricAmount(product);
+    const convertedServingValue = convertOpenFoodFactsPerHundredToServing(fallbackHundredValue, servingMetricAmount);
+    if (Number.isFinite(convertedServingValue)) {
+      return convertedServingValue;
+    }
+
+    if (Number.isFinite(fallbackHundredValue)) {
+      return fallbackHundredValue;
+    }
+
+    if (Number.isFinite(neutralValue)) {
+      return neutralValue;
+    }
+
+    return null;
+  }
+
+  function resolveOpenFoodFactsServingCalories(product) {
+    const nutriments = product?.nutriments || {};
+    const servingMetricAmount = extractOpenFoodFactsServingMetricAmount(product);
+    const isPerServing = isOpenFoodFactsPerServing(product);
+    const directServingKcal = getOpenFoodFactsFieldValue(nutriments, ["energy-kcal_serving"]);
+    const neutralKcal = getOpenFoodFactsFieldValue(nutriments, ["energy-kcal"]);
+    const perHundredKcal = getOpenFoodFactsFieldValue(nutriments, ["energy-kcal_100g"]);
+    const directServingKj = getOpenFoodFactsFieldValue(nutriments, ["energy-kj_serving", "energy_serving"]);
+    const neutralKj = getOpenFoodFactsFieldValue(nutriments, ["energy-kj", "energy"]);
+    const perHundredKj = getOpenFoodFactsFieldValue(nutriments, ["energy-kj_100g", "energy_100g"]);
+    const servingKcalSource = Number.isFinite(directServingKcal) ? directServingKcal : (isPerServing ? neutralKcal : null);
+    const servingKjSource = Number.isFinite(directServingKj) ? directServingKj : (isPerServing ? neutralKj : null);
+    const directServingKcalFromKj = roundDerivedCalories(convertKilojoulesToKilocalories(servingKjSource));
+    const hundredKcalSource = Number.isFinite(perHundredKcal) ? perHundredKcal : (isOpenFoodFactsPerHundred(product) ? neutralKcal : null);
+    const hundredKjSource = Number.isFinite(perHundredKj) ? perHundredKj : (isOpenFoodFactsPerHundred(product) ? neutralKj : null);
+    const convertedHundredKcal = convertOpenFoodFactsPerHundredToServing(hundredKcalSource, servingMetricAmount);
+    const convertedHundredKcalFromKj = roundDerivedCalories(convertKilojoulesToKilocalories(
+      convertOpenFoodFactsPerHundredToServing(hundredKjSource, servingMetricAmount)
+    ));
+
+    if (Number.isFinite(servingKcalSource) && !valuesConflict(servingKcalSource, directServingKcalFromKj)) {
+      return servingKcalSource;
+    }
+
+    if (Number.isFinite(directServingKcalFromKj)) {
+      return directServingKcalFromKj;
+    }
+
+    if (Number.isFinite(convertedHundredKcal) && !valuesConflict(convertedHundredKcal, convertedHundredKcalFromKj)) {
+      return convertedHundredKcal;
+    }
+
+    if (Number.isFinite(convertedHundredKcalFromKj)) {
+      return convertedHundredKcalFromKj;
+    }
+
+    if (Number.isFinite(convertedHundredKcal)) {
+      return convertedHundredKcal;
+    }
+
+    return getFirstFiniteNumber([
+      servingKcalSource,
+      directServingKcalFromKj,
+      hundredKcalSource,
+      roundDerivedCalories(convertKilojoulesToKilocalories(hundredKjSource))
+    ]);
+  }
+
   function tokenizeSearchText(text) {
     const stopWords = new Set([
       "and", "with", "the", "for", "from", "pack", "count", "ct", "oz", "lb", "lbs",
@@ -717,37 +887,29 @@
   }
 
   function normalizeOpenFoodFactsNutrition(product) {
-    const nutriments = product?.nutriments || {};
     const nutrition = {
       servings: "",
-      calories: formatStoredNutritionNumber(getFirstFiniteNumber([
-        nutriments["energy-kcal_serving"],
-        nutriments["energy-kcal"],
-        nutriments["energy-kcal_100g"]
-      ])),
-      fat: formatStoredNutritionNumber(getFirstFiniteNumber([
-        nutriments.fat_serving,
-        nutriments.fat,
-        nutriments.fat_100g
-      ])),
-      protein: formatStoredNutritionNumber(getFirstFiniteNumber([
-        nutriments.proteins_serving,
-        nutriments.proteins,
-        nutriments.proteins_100g,
-        nutriments.protein_serving,
-        nutriments.protein,
-        nutriments.protein_100g
-      ])),
-      carbs: formatStoredNutritionNumber(getFirstFiniteNumber([
-        nutriments.carbohydrates_serving,
-        nutriments.carbohydrates,
-        nutriments.carbohydrates_100g
-      ])),
-      fiber: formatStoredNutritionNumber(getFirstFiniteNumber([
-        nutriments.fiber_serving,
-        nutriments.fiber,
-        nutriments.fiber_100g
-      ]))
+      calories: formatStoredNutritionNumber(resolveOpenFoodFactsServingCalories(product)),
+      fat: formatStoredNutritionNumber(resolveOpenFoodFactsServingNutrient(product, {
+        servingKeys: ["fat_serving"],
+        neutralKeys: ["fat"],
+        hundredKeys: ["fat_100g"]
+      })),
+      protein: formatStoredNutritionNumber(resolveOpenFoodFactsServingNutrient(product, {
+        servingKeys: ["proteins_serving", "protein_serving"],
+        neutralKeys: ["proteins", "protein"],
+        hundredKeys: ["proteins_100g", "protein_100g"]
+      })),
+      carbs: formatStoredNutritionNumber(resolveOpenFoodFactsServingNutrient(product, {
+        servingKeys: ["carbohydrates_serving"],
+        neutralKeys: ["carbohydrates"],
+        hundredKeys: ["carbohydrates_100g"]
+      })),
+      fiber: formatStoredNutritionNumber(resolveOpenFoodFactsServingNutrient(product, {
+        servingKeys: ["fiber_serving"],
+        neutralKeys: ["fiber"],
+        hundredKeys: ["fiber_100g"]
+      }))
     };
 
     if (!hasNutritionValues(nutrition)) {
