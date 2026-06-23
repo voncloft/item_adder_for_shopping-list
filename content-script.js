@@ -8,17 +8,6 @@
   const LAST_DEPARTMENT_KEY = "lastDepartment";
   const PANEL_ID = "walmart-food-import-helper-panel";
   const DEFAULT_WEEK_SERVINGS = "7";
-  const OFF_PRODUCT_FIELDS = [
-    "code",
-    "product_name",
-    "brands",
-    "quantity",
-    "nutrition_data_per",
-    "serving_size",
-    "serving_quantity",
-    "nutriments",
-    "product_quantity"
-  ].join(",");
   let panelElements = null;
   let currentUrl = location.href;
   const nutritionLookupCache = new Map();
@@ -38,6 +27,14 @@
     } catch (error) {
       return null;
     }
+  }
+
+  async function sendRuntimeMessage(message) {
+    const response = await browserApi.runtime.sendMessage(message);
+    if (!response || response.ok !== true) {
+      throw new Error(response?.error || "Background request failed.");
+    }
+    return response;
   }
 
   function normalizeText(value) {
@@ -919,28 +916,23 @@
     return nutrition;
   }
 
-  async function fetchOpenFoodFactsJson(url) {
-    const response = await fetch(url, {
-      method: "GET"
-    });
-
-    if (!response.ok) {
-      throw new Error(`Open Food Facts responded ${response.status}.`);
-    }
-
-    return response.json();
-  }
-
   async function fetchOpenFoodFactsByBarcode(barcode) {
     const cleanBarcode = normalizeBarcode(barcode);
     if (!cleanBarcode) {
       return null;
     }
 
-    const url = new URL(`https://world.openfoodfacts.org/api/v2/product/${cleanBarcode}`);
-    url.searchParams.set("fields", OFF_PRODUCT_FIELDS);
-
-    const json = await fetchOpenFoodFactsJson(url.toString());
+    const response = await sendRuntimeMessage({
+      type: "fetchOpenFoodFactsProduct",
+      barcode: cleanBarcode,
+      context: {
+        source: "content-script",
+        pageUrl: location.href,
+        itemId: extractItemIdFromUrl(location.href),
+        title: normalizeText(document.title)
+      }
+    });
+    const json = response.json;
     if (!json || json.status !== 1 || !json.product) {
       return null;
     }
@@ -964,16 +956,17 @@
       return null;
     }
 
-    const url = new URL("https://world.openfoodfacts.org/cgi/search.pl");
-    url.searchParams.set("action", "process");
-    url.searchParams.set("search_terms", cleanTitle);
-    url.searchParams.set("search_simple", "1");
-    url.searchParams.set("json", "1");
-    url.searchParams.set("page_size", "8");
-    url.searchParams.set("sort_by", "unique_scans_n");
-    url.searchParams.set("fields", OFF_PRODUCT_FIELDS);
-
-    const json = await fetchOpenFoodFactsJson(url.toString());
+    const response = await sendRuntimeMessage({
+      type: "searchOpenFoodFacts",
+      title: cleanTitle,
+      context: {
+        source: "content-script",
+        pageUrl: location.href,
+        itemId: extractItemIdFromUrl(location.href),
+        title: cleanTitle
+      }
+    });
+    const json = response.json;
     const products = Array.isArray(json?.products) ? json.products : [];
     if (products.length === 0) {
       return null;
@@ -1003,7 +996,7 @@
       source: "Open Food Facts search",
       sourceUrl: bestProduct?.code
         ? `https://world.openfoodfacts.org/product/${bestProduct.code}`
-        : url.toString(),
+        : null,
       nutrition: normalizeOpenFoodFactsNutrition(bestProduct),
       matchedName: normalizeText(bestProduct.product_name)
     };
@@ -1079,60 +1072,26 @@
     return new URL(settings.addEndpoint, settings.serverBaseUrl).toString();
   }
 
-  function stripHtml(text) {
-    return String(text || "")
-      .replace(/<script[\s\S]*?<\/script>/gi, " ")
-      .replace(/<style[\s\S]*?<\/style>/gi, " ")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
-
   async function submitFoodInsert(form, settings) {
-    const targetUrl = buildServerUrl(settings);
-    const body = new URLSearchParams();
-
-    Object.entries(form).forEach(([key, value]) => {
-      body.set(key, value);
-    });
-    body.set("format", "json");
-
-    const response = await fetch(targetUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-        "Accept": "application/json"
-      },
-      body: body.toString(),
-      credentials: "include"
+    const response = await sendRuntimeMessage({
+      type: "submitFoodInsert",
+      form,
+      settings,
+      context: {
+        source: "content-script-panel",
+        pageUrl: location.href,
+        itemId: extractItemIdFromUrl(location.href),
+        item: form.item,
+        price: form.price,
+        dept: form.dept
+      }
     });
 
-    const responseText = await response.text();
-    let json = null;
-
-    try {
-      json = JSON.parse(responseText);
-    } catch (error) {
-      json = null;
+    if (!response || response.ok !== true) {
+      throw new Error(response?.error || "Server insert failed.");
     }
 
-    if (!response.ok) {
-      throw new Error(json?.error || stripHtml(responseText) || `Server responded ${response.status}.`);
-    }
-
-    if (json && json.ok === false) {
-      throw new Error(json.error || "Server returned ok=false.");
-    }
-
-    if (json && json.ok) {
-      return json;
-    }
-
-    if (/Imported Ingredient to main food database/i.test(responseText)) {
-      return { ok: true };
-    }
-
-    throw new Error(stripHtml(responseText) || "Server response did not confirm the insert.");
+    return response.data;
   }
 
   function setPanelStatus(message, tone) {

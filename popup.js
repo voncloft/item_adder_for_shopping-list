@@ -57,15 +57,6 @@ function buildServerUrl(settings) {
   return new URL(settings.addEndpoint, settings.serverBaseUrl).toString();
 }
 
-function stripHtml(text) {
-  return String(text || "")
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 function summarizeServer(settings) {
   try {
     return `POST -> ${buildServerUrl(settings)}`;
@@ -187,50 +178,25 @@ function readForm() {
 }
 
 async function submitFoodInsert(form, settings) {
-  const targetUrl = buildServerUrl(settings);
-  const body = new URLSearchParams();
-
-  Object.entries(form).forEach(([key, value]) => {
-    body.set(key, value);
-  });
-  body.set("format", "json");
-
-  const response = await fetch(targetUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-      "Accept": "application/json"
-    },
-    body: body.toString(),
-    credentials: "include"
+  const response = await browserApi.runtime.sendMessage({
+    type: "submitFoodInsert",
+    form,
+    settings,
+    context: {
+      source: "popup",
+      pageUrl: currentPageData?.url || null,
+      itemId: currentPageData?.itemId || null,
+      item: form.item,
+      price: form.price,
+      dept: form.dept
+    }
   });
 
-  const responseText = await response.text();
-  let json = null;
-
-  try {
-    json = JSON.parse(responseText);
-  } catch (error) {
-    json = null;
+  if (!response || response.ok !== true) {
+    throw new Error(response?.error || "Server insert failed.");
   }
 
-  if (!response.ok) {
-    throw new Error(json?.error || stripHtml(responseText) || `Server responded ${response.status}.`);
-  }
-
-  if (json && json.ok === false) {
-    throw new Error(json.error || "Server returned ok=false.");
-  }
-
-  if (json && json.ok) {
-    return json;
-  }
-
-  if (/Imported Ingredient to main food database/i.test(responseText)) {
-    return { ok: true };
-  }
-
-  throw new Error(stripHtml(responseText) || "Server response did not confirm the insert.");
+  return response.data;
 }
 
 async function refreshCurrentPage() {

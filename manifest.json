@@ -7,6 +7,7 @@
     "activeTab",
     "tabs",
     "storage",
+    "downloads",
     "http://*/*",
     "https://*/*",
     "https://www.walmart.com/*",
@@ -15,6 +16,11 @@
   "browser_action": {
     "default_title": "Walmart Food Import Helper",
     "default_popup": "popup.html"
+  },
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
   },
   "options_ui": {
     "page": "options.html",

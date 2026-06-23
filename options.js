@@ -11,7 +11,9 @@ const elements = {
   serverBaseUrl: document.getElementById("serverBaseUrl"),
   addEndpoint: document.getElementById("addEndpoint"),
   saveSettings: document.getElementById("saveSettings"),
-  resetSettings: document.getElementById("resetSettings")
+  resetSettings: document.getElementById("resetSettings"),
+  downloadLogs: document.getElementById("downloadLogs"),
+  clearLogs: document.getElementById("clearLogs")
 };
 
 if (!browserApi) {
@@ -55,6 +57,14 @@ function buildServerUrl(settings) {
   return new URL(settings.addEndpoint, settings.serverBaseUrl).toString();
 }
 
+async function sendRuntimeMessage(message) {
+  const response = await browserApi.runtime.sendMessage(message);
+  if (!response || response.ok !== true) {
+    throw new Error(response?.error || "Background request failed.");
+  }
+  return response;
+}
+
 async function saveSettings() {
   const settings = readForm();
   const fullUrl = buildServerUrl(settings);
@@ -65,6 +75,42 @@ async function saveSettings() {
 function resetSettings() {
   writeForm(getDefaultSettings());
   setStatus("Defaults restored in the form. Click Save Settings to apply them.", "good");
+}
+
+async function downloadLogs() {
+  const response = await sendRuntimeMessage({
+    type: "getDebugLogExport",
+    context: {
+      source: "options"
+    }
+  });
+  const blob = new Blob([response.text], { type: "text/plain;charset=utf-8" });
+  const objectUrl = URL.createObjectURL(blob);
+
+  try {
+    await browserApi.downloads.download({
+      url: objectUrl,
+      filename: response.filename,
+      saveAs: true,
+      conflictAction: "uniquify"
+    });
+  } finally {
+    window.setTimeout(() => {
+      URL.revokeObjectURL(objectUrl);
+    }, 1000);
+  }
+
+  setStatus("Downloaded debug log.", "good");
+}
+
+async function clearLogs() {
+  await sendRuntimeMessage({
+    type: "clearDebugLogs",
+    context: {
+      source: "options"
+    }
+  });
+  setStatus("Cleared debug logs.", "good");
 }
 
 async function init() {
@@ -79,6 +125,18 @@ elements.saveSettings.addEventListener("click", () => {
 });
 
 elements.resetSettings.addEventListener("click", resetSettings);
+
+elements.downloadLogs.addEventListener("click", () => {
+  downloadLogs().catch((error) => {
+    setStatus(error.message || String(error), "bad");
+  });
+});
+
+elements.clearLogs.addEventListener("click", () => {
+  clearLogs().catch((error) => {
+    setStatus(error.message || String(error), "bad");
+  });
+});
 
 init().catch((error) => {
   setStatus(error.message || String(error), "bad");
