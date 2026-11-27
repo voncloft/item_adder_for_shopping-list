@@ -12,6 +12,7 @@ const elements = {
   price: document.getElementById("price"),
   itemId: document.getElementById("itemId"),
   dept: document.getElementById("dept"),
+  nonFood: document.getElementById("nonFood"),
   servings: document.getElementById("servings"),
   calories: document.getElementById("calories"),
   protein: document.getElementById("protein"),
@@ -33,6 +34,12 @@ if (!browserApi) {
 }
 
 elements.version.textContent = `v${browserApi.runtime.getManifest().version}`;
+
+// Only pad a complete letter + single digit aisle; keep other departments intact.
+function normalizeDepartment(value) {
+  return String(value ?? "").trim().replace(/^([a-z])([0-9])$/i,
+    (_, letter, digit) => `${letter}0${digit}`);
+}
 
 function getDefaultSettings() {
   return {
@@ -99,6 +106,7 @@ async function fetchCurrentPageData() {
     }
     return data;
   } catch (error) {
+    await browserApi.tabs.executeScript(tab.id, { file: "nutrition.js" });
     await browserApi.tabs.executeScript(tab.id, { file: "content-script.js" });
   }
 
@@ -121,13 +129,8 @@ function applyDetectedData(data, lastDepartment) {
   setFieldValue(elements.item, data.title);
   setFieldValue(elements.price, data.price);
   setFieldValue(elements.itemId, data.itemId);
-  setFieldValue(elements.dept, data.department || lastDepartment);
-  setFieldValue(elements.servings, nutrition.servings);
-  setFieldValue(elements.calories, nutrition.calories);
-  setFieldValue(elements.protein, nutrition.protein);
-  setFieldValue(elements.fat, nutrition.fat);
-  setFieldValue(elements.carbs, nutrition.carbs);
-  setFieldValue(elements.fiber, nutrition.fiber);
+  setFieldValue(elements.dept, normalizeDepartment(data.department || lastDepartment));
+  WalmartNutrition.renderFields(elements, nutrition, WalmartNutrition.isNonFood(data));
   setFieldValue(elements.url, data.url);
 }
 
@@ -166,13 +169,8 @@ function readForm() {
   return {
     item,
     price,
-    dept: String(elements.dept.value || "").trim(),
-    servings: normalizeOptionalNumber(elements.servings.value, "Servings"),
-    protein: normalizeOptionalNumber(elements.protein.value, "Protein"),
-    fat: normalizeOptionalNumber(elements.fat.value, "Fat"),
-    carbs: normalizeOptionalNumber(elements.carbs.value, "Carbohydrates"),
-    calories: normalizeOptionalNumber(elements.calories.value, "Calories"),
-    fiber: normalizeOptionalNumber(elements.fiber.value, "Fiber"),
+    dept: normalizeDepartment(elements.dept.value),
+    ...WalmartNutrition.readFields(elements, normalizeOptionalNumber),
     url
   };
 }
@@ -207,7 +205,9 @@ async function refreshCurrentPage() {
     const data = await fetchCurrentPageData();
     applyDetectedData(data, stored[LAST_DEPARTMENT_KEY]);
 
-    if (data.price) {
+    if (elements.nonFood.checked) {
+      setStatus("Non-food item detected. Nutrition is set to zero.", "good");
+    } else if (data.price) {
       setStatus(`Detected price ${data.price} from ${data.source}.`, "good");
     } else {
       setStatus("Loaded the Walmart page, but no price was detected. You can enter it manually.");
@@ -248,5 +248,6 @@ function openSettingsPage() {
 elements.settings.addEventListener("click", openSettingsPage);
 elements.refresh.addEventListener("click", refreshCurrentPage);
 elements.saveCurrent.addEventListener("click", saveCurrentItem);
+elements.nonFood.addEventListener("change", () => WalmartNutrition.toggleFields(elements));
 
 renderServerSummary().then(refreshCurrentPage);

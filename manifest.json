@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Walmart Food Import Helper",
-  "version": "1.0",
+  "version": "1.2",
   "description": "Capture Walmart product data and submit it through shopping-list-website's add_food_to_db.php flow.",
   "permissions": [
     "activeTab",
@@ -19,6 +19,7 @@
   },
   "background": {
     "scripts": [
+      "nutrition.js",
       "background.js"
     ]
   },
@@ -32,6 +33,7 @@
         "*://www.walmart.com/*"
       ],
       "js": [
+        "nutrition.js",
         "content-script.js"
       ],
       "run_at": "document_idle"

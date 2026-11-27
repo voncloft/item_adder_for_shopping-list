@@ -23,6 +23,12 @@
     return;
   }
 
+  // Only pad a complete letter + single digit aisle; keep other departments intact.
+  function normalizeDepartment(value) {
+    return String(value ?? "").trim().replace(/^([a-z])([0-9])$/i,
+      (_, letter, digit) => `${letter}0${digit}`);
+  }
+
   function getDefaultSettings() {
     return {
       serverBaseUrl: "http://voncloft.shopping.com",
@@ -181,8 +187,8 @@
     const body = new URLSearchParams();
     const startedAt = Date.now();
 
-    Object.entries(form || {}).forEach(([key, value]) => {
-      body.set(key, value);
+    Object.entries(WalmartNutrition.forSubmission(form || {})).forEach(([key, value]) => {
+      body.set(key, key === "dept" ? normalizeDepartment(value) : value);
     });
     body.set("format", "json");
 

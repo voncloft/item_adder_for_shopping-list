@@ -12,9 +12,17 @@
   let currentUrl = location.href;
   const nutritionLookupCache = new Map();
   let refreshSequenceToken = 0;
+  let panelNonFoodOverride = null;
+  let panelDataUrl = "";
 
   if (!browserApi || location.hostname !== "www.walmart.com") {
     return;
+  }
+
+  // Only pad a complete letter + single digit aisle; keep other departments intact.
+  function normalizeDepartment(value) {
+    return String(value ?? "").trim().replace(/^([a-z])([0-9])$/i,
+      (_, letter, digit) => `${letter}0${digit}`);
   }
 
   function parseJson(text) {
@@ -192,12 +200,12 @@
     for (const pattern of patterns) {
       const match = value.match(pattern);
       if (match && match[1]) {
-        return match[1].toUpperCase();
+        return normalizeDepartment(match[1].toUpperCase());
       }
     }
 
     if (/^[a-z]?\d+[a-z0-9-]*$/i.test(value)) {
-      return value.toUpperCase();
+      return normalizeDepartment(value.toUpperCase());
     }
 
     return null;
@@ -391,6 +399,12 @@
     return lastNonEmpty(labels);
   }
 
+  function extractCategoriesFromDom(root = document) {
+    return Array.from(root.querySelectorAll(
+      'nav[aria-label*="breadcrumb" i] a, [data-testid*="breadcrumb" i] a'))
+      .map(node => normalizeText(node.textContent)).filter(Boolean);
+  }
+
   function normalizeNutritionList(items) {
     const nutrition = getEmptyNutrition();
 
@@ -523,6 +537,7 @@
       itemId: extractItemIdFromUrl(pageUrl),
       barcode: extractBarcodeFromObject(product, 0) || extractBarcodeFromJsonLd(root),
       department: extractDepartmentFromProduct(product),
+      categories: WalmartNutrition.categoryLabels(product),
       nutrition: extractNutritionFromProduct(product),
       source: "product"
     };
@@ -554,6 +569,7 @@
           itemId,
           barcode: extractBarcodeFromObject(item, 0) || extractBarcodeFromJsonLd(root),
           department: extractAisleFromObject(item, 0) || extractDepartmentFromDom(root),
+          categories: WalmartNutrition.categoryLabels(item),
           nutrition: null,
           source: "search"
         };
@@ -580,6 +596,7 @@
         itemId: extractItemIdFromUrl(pageUrl),
         barcode: extractBarcodeFromJsonLdProduct(product),
         department: normalizeText(product.category),
+        categories: WalmartNutrition.categoryLabels(product),
         nutrition: normalizeNutritionCandidate(product.nutrition),
         source: "json-ld"
       };
@@ -606,6 +623,7 @@
       itemId: data?.itemId || extractItemIdFromUrl(pageUrl),
       barcode: data?.barcode || extractBarcodeFromJsonLd(root),
       department,
+      categories: [...(data?.categories || []), ...extractCategoriesFromDom(root)],
       nutritionSource: data?.nutritionSource || null,
       nutrition: hasNutritionValues(nutrition) ? nutrition : getEmptyNutrition(),
       source: data?.source || "none"
@@ -1003,6 +1021,9 @@
   }
 
   async function lookupFallbackNutrition(data) {
+    if (WalmartNutrition.isNonFood(data)) {
+      return null;
+    }
     const cacheKey = data?.barcode
       ? `barcode:${data.barcode}`
       : `title:${String(data?.title || "").toLowerCase()}`;
@@ -1309,6 +1330,15 @@
 
     const deptField = createField("Department", "input", "text");
 
+    const nonFoodLabel = document.createElement("label");
+    nonFoodLabel.style.display = "flex";
+    nonFoodLabel.style.alignItems = "center";
+    nonFoodLabel.style.gap = "8px";
+    nonFoodLabel.style.marginBottom = "12px";
+    const nonFood = document.createElement("input");
+    nonFood.type = "checkbox";
+    nonFoodLabel.append(nonFood, document.createTextNode("Non-food item — zero nutrition"));
+
     const servingsField = createField("Week Servings", "input", "text");
     servingsField.input.inputMode = "decimal";
 
@@ -1379,6 +1409,7 @@
       itemField.field,
       makeRow(priceField, itemIdField),
       deptField.field,
+      nonFoodLabel,
       makeRow(servingsField, caloriesField),
       makeRow(proteinField, fatField),
       makeRow(carbsField, fiberField),
@@ -1398,6 +1429,7 @@
       price: priceField.input,
       itemId: itemIdField.input,
       dept: deptField.input,
+      nonFood,
       servings: servingsField.input,
       calories: caloriesField.input,
       protein: proteinField.input,
@@ -1410,6 +1442,15 @@
       refresh,
       isOpen: false
     };
+
+    nonFood.addEventListener("change", () => {
+      panelNonFoodOverride = nonFood.checked;
+      WalmartNutrition.toggleFields(panelElements);
+      if (nonFood.checked) {
+        setNutritionSource(null);
+        setPanelStatus("Non-food item. Nutrition is set to zero.", "good");
+      }
+    });
 
     launcher.addEventListener("click", () => {
       setPanelOpen(true);
@@ -1429,18 +1470,19 @@
     }
 
     const nutrition = data?.nutrition || getEmptyNutrition();
+    const url = data?.url || location.href;
+    if (panelDataUrl !== url) {
+      panelNonFoodOverride = null;
+      panelDataUrl = url;
+    }
+    const nonFood = panelNonFoodOverride ?? WalmartNutrition.isNonFood(data);
     panelElements.item.value = data?.title || "";
     panelElements.price.value = data?.price || "";
     panelElements.itemId.value = data?.itemId || "";
-    panelElements.dept.value = data?.department || lastDepartment || "";
-    panelElements.servings.value = DEFAULT_WEEK_SERVINGS;
-    panelElements.calories.value = nutrition.calories || "";
-    panelElements.protein.value = nutrition.protein || "";
-    panelElements.fat.value = nutrition.fat || "";
-    panelElements.carbs.value = nutrition.carbs || "";
-    panelElements.fiber.value = nutrition.fiber || "";
+    panelElements.dept.value = normalizeDepartment(data?.department || lastDepartment);
+    WalmartNutrition.renderFields(panelElements, nutrition, nonFood, DEFAULT_WEEK_SERVINGS);
     panelElements.url.value = data?.url || location.href;
-    setNutritionSource(data?.nutritionSource || null);
+    setNutritionSource(nonFood ? null : data?.nutritionSource || null);
   }
 
   function normalizeOptionalNumber(value, label, decimalPlaces) {
@@ -1476,13 +1518,8 @@
     return {
       item,
       price,
-      dept: String(panelElements.dept.value || "").trim(),
-      servings: normalizeOptionalNumber(panelElements.servings.value, "Servings"),
-      protein: normalizeOptionalNumber(panelElements.protein.value, "Protein"),
-      fat: normalizeOptionalNumber(panelElements.fat.value, "Fat"),
-      carbs: normalizeOptionalNumber(panelElements.carbs.value, "Carbohydrates"),
-      calories: normalizeOptionalNumber(panelElements.calories.value, "Calories"),
-      fiber: normalizeOptionalNumber(panelElements.fiber.value, "Fiber"),
+      dept: normalizeDepartment(panelElements.dept.value),
+      ...WalmartNutrition.readFields(panelElements, normalizeOptionalNumber),
       url: String(panelElements.url.value || location.href).trim()
     };
   }
@@ -1517,6 +1554,11 @@
 
     renderPanelData(data, stored[LAST_DEPARTMENT_KEY]);
 
+    if (panelElements.nonFood.checked) {
+      setPanelStatus("Non-food item detected. Nutrition is set to zero.", "good");
+      return;
+    }
+
     if (data?.price) {
       setPanelStatus(`Detected ${data.price} from ${data.source}.`, "good");
     } else {
@@ -1529,6 +1571,9 @@
 
     setPanelStatus("Looking up nutrition from Open Food Facts...", "neutral");
     const fallback = await lookupFallbackNutrition(data);
+    if (panelNonFoodOverride === true || data?.url !== location.href) {
+      return;
+    }
     if (!fallback || !fallback.nutrition) {
       if (data?.price) {
         setPanelStatus(`Detected ${data.price} from ${data.source}. Nutrition fallback not found.`, "neutral");

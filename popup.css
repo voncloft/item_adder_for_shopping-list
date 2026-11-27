@@ -91,6 +91,13 @@ h2 {
   gap: 10px;
 }
 
+.non-food {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
 label,
 .count {
   font-size: 12px;
